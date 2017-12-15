@@ -55,15 +55,19 @@ static struct {
 
 static int xmp_getattr(const char *path, struct stat *stbuf)
 {
-  char fullpath[PATH_MAX];
-	int res;
-
-  sprintf(fullpath, "%s%s",
-      rand() % 2 == 0 ? global_context.driveA : global_context.driveB, path);
-
-	res = lstat(fullpath, stbuf);
-	if (res == -1)
+    char fullpath[2][PATH_MAX];
+	int res1;
+    int res2;
+    sprintf(fullpath[0], "%s%s", global_context.driveA, path);    
+    sprintf(fullpath[1], "%s%s", global_context.driveB, path);
+    
+    struct stat temp;
+	res1 = lstat(fullpath[0], stbuf);
+    res2 = lstat(fullpath[1], &temp);
+    if (res1 == -1 || res2 == -1)
 		return -errno;
+    
+    stbuf->st_size += temp.st_size;	
 
 	return 0;
 }
@@ -370,52 +374,77 @@ static int xmp_open(const char *path, struct fuse_file_info *fi)
 static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
     struct fuse_file_info *fi)
 {
-  char fullpath[PATH_MAX];
-  int fd;
+  printf("xmp_read called!\n");
+  char fullpath[2][PATH_MAX];
   int res;
-
-  sprintf(fullpath, "%s%s",
-      rand() % 2 == 0 ? global_context.driveA : global_context.driveB, path);
+    
+  sprintf(fullpath[0], "%s%s", global_context.driveA, path);
+  sprintf(fullpath[1], "%s%s", global_context.driveB, path);
   (void) fi;
-  fd = open(fullpath, O_RDONLY);
-  if (fd == -1)
-    return -errno;
-
-  res = pread(fd, buf, size, offset);
-  if (res == -1)
-    res = -errno;
-
-  close(fd);
-  return res;
+  int rest = size;
+  int read_size = 0;
+  int i = 0;
+  int total_read = 0;
+  offset = 0;
+  while(1){
+    if(rest == 0) break;
+    else if(rest > 512) {
+        read_size = 512;
+        rest -= 512;
+    } else{
+        read_size = rest;
+        rest = 0;
+    }
+    int fd = open(fullpath[i%2], O_RDONLY);
+    if(fd == -1) return -errno;
+    
+    res = pread(fd, buf+512*i, read_size, offset);
+    if(res == -1) return -errno;
+    close(fd);
+    total_read += res;
+    if(i%2 == 1)
+        offset += read_size;    
+    i++;
+  }
+  return total_read;
 }
 
 static int xmp_write(const char *path, const char *buf, size_t size,
     off_t offset, struct fuse_file_info *fi)
 {
+  printf("xmp_write called! \n");
   char fullpaths[2][PATH_MAX];
-  int fd;
   int res;
-
   (void) fi;
+  int rest = size;
+  offset = 0;
 
   sprintf(fullpaths[0], "%s%s", global_context.driveA, path);
   sprintf(fullpaths[1], "%s%s", global_context.driveB, path);
-
-  for (int i = 0; i < 2; ++i) {
-    const char* fullpath = fullpaths[i];
-
-    fd = open(fullpath, O_WRONLY);
-    if (fd == -1)
-      return -errno;
-
-    res = pwrite(fd, buf, size, offset);
-    if (res == -1)
-      res = -errno;
-
+  int i = 0;
+  int write_size = 0; 
+  int total_write = 0;
+  while(1){
+    if(rest == 0) break;
+    else if(rest > 512){
+        write_size = 512;
+        rest -= 512;    
+    } else{
+        write_size = rest;
+        rest = 0;    
+    }
+    int fd = open(fullpaths[i%2], O_WRONLY);
+    if(fd == -1) return -errno;
+        
+    res = pwrite(fd, buf + 512*i , write_size, offset);    
+    if(res == -1 ) {return -errno;}
+    if(i%2 == 1) 
+        offset+=write_size;    
+    total_write += res;
     close(fd);
-  }
-
-  return res;
+    i++;
+  } 
+  return total_write;
 }
 
 static int xmp_statfs(const char *path, struct statvfs *stbuf)
